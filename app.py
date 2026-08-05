@@ -1,3 +1,6 @@
+import html
+import re
+
 import pandas as pd
 import streamlit as st
 
@@ -6,6 +9,194 @@ from nl_to_sql import generate_sql
 
 st.set_page_config(page_title="Sales NL-to-SQL Chatbot", page_icon="📊", layout="wide")
 
+# ---------------------------------------------------------------------------
+# THEME — dark navy "data terminal" look: teal/amber accents, Space Grotesk
+# for display type, IBM Plex Sans for body, IBM Plex Mono for SQL/data.
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+    :root {
+        --bg: #0B1220;
+        --surface: #131B2E;
+        --surface-alt: #1B2540;
+        --border: #232D45;
+        --teal: #22D3B0;
+        --amber: #F2A93B;
+        --text: #E7ECF5;
+        --muted: #8A93A8;
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'IBM Plex Sans', sans-serif;
+        color: var(--text);
+    }
+
+    [data-testid="stAppViewContainer"] {
+        background: radial-gradient(ellipse 120% 80% at 50% -10%, #16213B 0%, var(--bg) 55%);
+    }
+
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+
+    /* ---- Sidebar ---- */
+    [data-testid="stSidebar"] {
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+    }
+    [data-testid="stSidebar"] h2 {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 0.78rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--teal);
+        font-weight: 600;
+        margin-top: 0.5rem;
+    }
+    [data-testid="stSidebar"] .stButton>button {
+        background: var(--surface-alt);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--teal);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 0.85rem;
+        text-align: left;
+        padding: 0.6rem 0.8rem;
+        transition: all 0.15s ease;
+    }
+    [data-testid="stSidebar"] .stButton>button:hover {
+        background: #223054;
+        border-left: 3px solid var(--amber);
+        color: #fff;
+        transform: translateX(2px);
+    }
+    [data-testid="stSidebar"] hr {
+        border-color: var(--border);
+    }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] .stCaption {
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.5;
+    }
+
+    /* ---- Titles / eyebrow ---- */
+    .eyebrow {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--amber);
+        margin-bottom: 0.4rem;
+    }
+    h1 {
+        font-family: 'Space Grotesk', sans-serif !important;
+        font-weight: 700 !important;
+        background: linear-gradient(90deg, #F5F8FF 0%, var(--teal) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -0.01em;
+    }
+    [data-testid="stCaptionContainer"] {
+        color: var(--muted) !important;
+        font-size: 0.95rem;
+    }
+
+    /* ---- Chat messages ---- */
+    [data-testid="stChatMessage"] {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.6rem;
+    }
+
+    /* ---- Chat input ---- */
+    [data-testid="stChatInput"] textarea {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        font-family: 'IBM Plex Sans', sans-serif;
+    }
+    [data-testid="stChatInput"] {
+        border-color: var(--border) !important;
+    }
+
+    /* ---- Dataframe / chart containers ---- */
+    [data-testid="stDataFrame"], [data-testid="stArrowVegaLiteChart"] {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        padding: 0.25rem;
+        background: var(--surface);
+    }
+
+    /* ---- Expander (View generated SQL) ---- */
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+    }
+    [data-testid="stExpander"] summary {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.85rem;
+        color: var(--teal);
+    }
+
+    /* ---- SQL terminal window ---- */
+    .sql-terminal {
+        background: #0D1526;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-top: 0.4rem;
+    }
+    .sql-terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0.5rem 0.75rem;
+        background: var(--surface-alt);
+        border-bottom: 1px solid var(--border);
+    }
+    .sql-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+    .sql-terminal-title {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.72rem;
+        color: var(--muted);
+        margin-left: 0.5rem;
+    }
+    .sql-terminal-body {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.85rem;
+        line-height: 1.6;
+        padding: 0.9rem 1.1rem;
+        white-space: pre-wrap;
+        color: #C9D3E8;
+        overflow-x: auto;
+    }
+    .sql-kw { color: var(--teal); font-weight: 600; }
+
+    /* ---- Alerts ---- */
+    [data-testid="stAlert"] {
+        border-radius: 10px;
+        font-family: 'IBM Plex Sans', sans-serif;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------------------------
+
+st.markdown('<div class="eyebrow">GOLD SCHEMA · NATURAL LANGUAGE → SQL</div>', unsafe_allow_html=True)
 st.title("📊 Sales NL-to-SQL Chatbot")
 st.caption(
     "Ask questions about the sales data warehouse in plain English. "
@@ -20,6 +211,38 @@ SAMPLE_QUESTIONS = [
     "What is the monthly sales trend for the last year?",
     "What is the average order value by product category?",
 ]
+
+SQL_KEYWORDS = [
+    "SELECT", "FROM", "WHERE", "LEFT JOIN", "INNER JOIN", "JOIN", "ON",
+    "GROUP BY", "ORDER BY", "LIMIT", "WITH", "HAVING", "AS", "AND", "OR",
+    "DESC", "ASC", "DISTINCT", "IN", "NOT", "NULL", "IS", "BETWEEN",
+    "CASE", "WHEN", "THEN", "ELSE", "END", "SUM", "COUNT", "AVG", "MAX", "MIN",
+]
+_KW_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(SQL_KEYWORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def render_sql_terminal(sql: str, title: str = "query.sql"):
+    """Renders SQL inside a styled mock terminal window with light keyword highlighting."""
+    escaped = html.escape(sql)
+    highlighted = _KW_PATTERN.sub(lambda m: f'<span class="sql-kw">{m.group(0)}</span>', escaped)
+    st.markdown(
+        f"""
+        <div class="sql-terminal">
+            <div class="sql-terminal-bar">
+                <span class="sql-dot" style="background:#FF5F57;"></span>
+                <span class="sql-dot" style="background:#FEBC2E;"></span>
+                <span class="sql-dot" style="background:#28C840;"></span>
+                <span class="sql-terminal-title">{title}</span>
+            </div>
+            <div class="sql-terminal-body">{highlighted}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 # ---- SIDEBAR ----
 with st.sidebar:
@@ -104,10 +327,10 @@ def handle_question(question: str):
 
 # ---- RENDER CHAT HISTORY ----
 for entry in st.session_state["history"]:
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.write(entry["question"])
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="⚙️"):
         if entry["error"]:
             st.error(f"Something went wrong: {entry['error']}")
         else:
@@ -120,7 +343,7 @@ for entry in st.session_state["history"]:
 
         if entry["sql"]:
             with st.expander("View generated SQL"):
-                st.code(entry["sql"], language="sql")
+                render_sql_terminal(entry["sql"])
 
 # ---- HANDLE SAMPLE QUESTION CLICK ----
 if "pending_question" in st.session_state:
