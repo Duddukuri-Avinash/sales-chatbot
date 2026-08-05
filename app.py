@@ -4,8 +4,15 @@ import re
 import pandas as pd
 import streamlit as st
 
-from db import run_query
-from nl_to_sql import generate_sql
+from db import (
+    get_default_engine,
+    create_engine_from_url,
+    get_dialect_name,
+    get_dialect_note,
+    introspect_schema,
+    run_query,
+)
+from nl_to_sql import generate_sql, DEFAULT_SCHEMA_DESCRIPTION, DEFAULT_DIALECT_NOTE
 
 st.set_page_config(page_title="Sales NL-to-SQL Chatbot", page_icon="📊", layout="wide")
 
@@ -204,6 +211,46 @@ st.markdown(
     [data-testid="stStatusWidget"] svg {
         color: var(--teal) !important;
     }
+    /* ---- Text inputs (connection string field) ---- */
+    .stTextInput input {
+        background: var(--surface-alt) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.82rem !important;
+    }
+    .stTextInput input:focus {
+        border-color: var(--teal) !important;
+        box-shadow: 0 0 0 1px var(--teal) !important;
+    }
+
+    /* ---- Connection status badge ---- */
+    .db-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        padding: 0.3rem 0.6rem;
+        border-radius: 20px;
+        margin-bottom: 0.5rem;
+    }
+    .db-badge-connected {
+        background: rgba(34, 211, 176, 0.12);
+        border: 1px solid var(--teal);
+        color: var(--teal);
+    }
+    .db-badge-default {
+        background: rgba(138, 147, 168, 0.12);
+        border: 1px solid var(--border);
+        color: var(--muted);
+    }
+    .db-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -211,12 +258,12 @@ st.markdown(
 
 # ---------------------------------------------------------------------------
 
-st.markdown('<div class="eyebrow">GOLD SCHEMA · NATURAL LANGUAGE → SQL</div>', unsafe_allow_html=True)
-st.title("📊 Sales NL-to-SQL Chatbot")
+st.markdown('<div class="eyebrow">NATURAL LANGUAGE → SQL · ANY DATABASE</div>', unsafe_allow_html=True)
+st.title("📊 NL-to-SQL Chatbot")
 st.caption(
-    "Ask questions about the sales data warehouse in plain English. "
-    "Your question is turned into SQL by Gemini, run against a Postgres "
-    "database (Supabase), and returned as a table + chart."
+    "Ask questions about your data in plain English. Your question is turned "
+    "into SQL by Gemini and run against a database of your choice — "
+    "connect your own in the sidebar, or try it on the built-in demo data."
 )
 
 SAMPLE_QUESTIONS = [
@@ -259,14 +306,93 @@ def render_sql_terminal(sql: str, title: str = "query.sql"):
     )
 
 
+# ---- SESSION STATE for custom DB connection ----
+if "custom_engine" not in st.session_state:
+    st.session_state["custom_engine"] = None
+    st.session_state["custom_schema"] = None
+    st.session_state["custom_dialect_note"] = None
+    st.session_state["custom_db_label"] = None
+
+
+def get_active_engine_and_context():
+    """Returns (engine, schema_description, dialect_note, label) for whichever
+    database is currently active — a connected custom one, or the built-in default."""
+    if st.session_state["custom_engine"] is not None:
+        return (
+            st.session_state["custom_engine"],
+            st.session_state["custom_schema"],
+            st.session_state["custom_dialect_note"],
+            st.session_state["custom_db_label"],
+        )
+    return (get_default_engine(), DEFAULT_SCHEMA_DESCRIPTION, DEFAULT_DIALECT_NOTE, "Default (Supabase demo data)")
+
+
 # ---- SIDEBAR ----
 with st.sidebar:
-    st.header("Try a sample question")
-    for q in SAMPLE_QUESTIONS:
-        if st.button(q, use_container_width=True):
-            st.session_state["pending_question"] = q
+    st.header("Connect your database")
+
+    if st.session_state["custom_engine"] is not None:
+        st.markdown(
+            f'<div class="db-badge db-badge-connected"><span class="db-dot"></span>'
+            f'Connected · {st.session_state["custom_db_label"]}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Disconnect", use_container_width=True):
+            st.session_state["custom_engine"] = None
+            st.session_state["custom_schema"] = None
+            st.session_state["custom_dialect_note"] = None
+            st.session_state["custom_db_label"] = None
+            st.session_state["history"] = []
+            st.rerun()
+
+        with st.expander("View detected schema"):
+            st.code(st.session_state["custom_schema"], language=None)
+    else:
+        st.markdown(
+            '<div class="db-badge db-badge-default"><span class="db-dot"></span>'
+            "Using default demo data</div>",
+            unsafe_allow_html=True,
+        )
+        db_url = st.text_input(
+            "Connection string",
+            placeholder="postgresql://user:pass@host:port/dbname",
+            type="password",
+            help=(
+                "Postgres: postgresql://user:pass@host:port/dbname\n"
+                "MySQL: mysql+pymysql://user:pass@host:port/dbname\n"
+                "SQL Server: mssql+pyodbc://user:pass@host:port/dbname?driver=ODBC+Driver+17+for+SQL+Server "
+                "(requires an ODBC driver installed on the machine running this app — "
+                "works locally, may not work on Streamlit Cloud)"
+            ),
+        )
+        if st.button("Connect", use_container_width=True):
+            if not db_url.strip():
+                st.error("Paste a connection string first.")
+            else:
+                with st.spinner("Connecting and reading schema…"):
+                    try:
+                        engine = create_engine_from_url(db_url)
+                        schema = introspect_schema(engine)
+                        dialect_note = get_dialect_note(engine)
+                        dialect_name = get_dialect_name(engine)
+                        st.session_state["custom_engine"] = engine
+                        st.session_state["custom_schema"] = schema
+                        st.session_state["custom_dialect_note"] = dialect_note
+                        st.session_state["custom_db_label"] = dialect_name
+                        st.session_state["history"] = []
+                        st.success("Connected!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Couldn't connect: {e}")
+        st.caption("Your credentials are used only for this session and are never stored.")
 
     st.divider()
+    if st.session_state["custom_engine"] is None:
+        st.header("Try a sample question")
+        for q in SAMPLE_QUESTIONS:
+            if st.button(q, use_container_width=True):
+                st.session_state["pending_question"] = q
+        st.divider()
     if st.button("🗑️ Clear chat history", use_container_width=True):
         st.session_state["history"] = []
         st.rerun()
@@ -333,6 +459,7 @@ def handle_question(question: str):
     stores the result in history. Renders its own chat bubbles for this
     turn so the person sees progress instead of a silent pause."""
     entry = {"question": question, "sql": None, "df": None, "error": None}
+    engine, schema_description, dialect_note, db_label = get_active_engine_and_context()
 
     with st.chat_message("user", avatar="🧑‍💻"):
         st.write(question)
@@ -340,10 +467,10 @@ def handle_question(question: str):
     with st.chat_message("assistant", avatar="⚙️"):
         try:
             with st.status("Interpreting your question…", expanded=True) as status:
-                sql = generate_sql(question)
+                sql = generate_sql(question, schema_description, dialect_note)
                 entry["sql"] = sql
-                status.update(label="Querying Supabase…", state="running")
-                df = run_query(sql)
+                status.update(label=f"Querying {db_label}…", state="running")
+                df = run_query(sql, engine)
                 entry["df"] = df
                 status.update(label="Done", state="complete", expanded=False)
         except Exception as e:
