@@ -189,6 +189,21 @@ st.markdown(
         border-radius: 10px;
         font-family: 'IBM Plex Sans', sans-serif;
     }
+
+    /* ---- Status widget (live "thinking" indicator) ---- */
+    [data-testid="stStatusWidget"] {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stStatusWidget"] p {
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.85rem !important;
+        color: var(--teal) !important;
+    }
+    [data-testid="stStatusWidget"] svg {
+        color: var(--teal) !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -314,18 +329,30 @@ def render_chart(df: pd.DataFrame):
 
 
 def handle_question(question: str):
+    """Runs the question live with a step-by-step status indicator, then
+    stores the result in history. Renders its own chat bubbles for this
+    turn so the person sees progress instead of a silent pause."""
     entry = {"question": question, "sql": None, "df": None, "error": None}
-    try:
-        sql = generate_sql(question)
-        entry["sql"] = sql
-        df = run_query(sql)
-        entry["df"] = df
-    except Exception as e:
-        entry["error"] = str(e)
+
+    with st.chat_message("user", avatar="🧑‍💻"):
+        st.write(question)
+
+    with st.chat_message("assistant", avatar="⚙️"):
+        try:
+            with st.status("Interpreting your question…", expanded=True) as status:
+                sql = generate_sql(question)
+                entry["sql"] = sql
+                status.update(label="Querying Supabase…", state="running")
+                df = run_query(sql)
+                entry["df"] = df
+                status.update(label="Done", state="complete", expanded=False)
+        except Exception as e:
+            entry["error"] = str(e)
+
     st.session_state["history"].append(entry)
 
 
-# ---- RENDER CHAT HISTORY ----
+# ---- RENDER PAST CHAT HISTORY (already resolved, no status needed) ----
 for entry in st.session_state["history"]:
     with st.chat_message("user", avatar="🧑‍💻"):
         st.write(entry["question"])
