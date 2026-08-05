@@ -1,6 +1,7 @@
 import html
 import re
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -132,12 +133,53 @@ st.markdown(
         border-color: var(--border) !important;
     }
 
-    /* ---- Dataframe / chart containers ---- */
-    [data-testid="stDataFrame"], [data-testid="stArrowVegaLiteChart"] {
+    /* ---- Results table (custom, since st.dataframe ignores app theme) ---- */
+    .table-wrap {
         border: 1px solid var(--border);
         border-radius: 10px;
-        overflow: hidden;
-        padding: 0.25rem;
+        background: var(--surface);
+        overflow: auto;
+        max-height: 420px;
+        margin-bottom: 0.5rem;
+    }
+    table.data-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: 'IBM Plex Sans', sans-serif;
+        font-size: 0.88rem;
+    }
+    table.data-table thead th {
+        position: sticky;
+        top: 0;
+        background: var(--surface-alt);
+        color: var(--teal);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        text-align: left;
+        padding: 0.6rem 0.9rem;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+    }
+    table.data-table tbody td {
+        color: var(--text);
+        padding: 0.5rem 0.9rem;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+    }
+    table.data-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    table.data-table tbody tr:hover td {
+        background: var(--surface-alt);
+    }
+
+    /* ---- Chart container ---- */
+    [data-testid="stArrowVegaLiteChart"] {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.75rem;
         background: var(--surface);
     }
 
@@ -427,8 +469,15 @@ def is_probably_datelike(series: pd.Series) -> bool:
     return any(token in name for token in ["date", "month", "year", "day"])
 
 
+CHART_BG = "transparent"
+CHART_GRID = "#232D45"
+CHART_LABEL = "#8A93A8"
+CHART_TITLE = "#E7ECF5"
+CHART_TEAL = "#22D3B0"
+
+
 def render_chart(df: pd.DataFrame):
-    """Best-effort auto chart: only draws one if the shape clearly suggests it."""
+    """Best-effort auto chart, dark-themed to match the rest of the UI."""
     if df.empty or len(df.columns) < 2:
         return
 
@@ -442,16 +491,44 @@ def render_chart(df: pd.DataFrame):
         return  # nothing measurable to plot
 
     value_col = numeric_cols[0]
+    axis_style = dict(labelColor=CHART_LABEL, titleColor=CHART_TITLE, gridColor=CHART_GRID)
 
     if date_cols:
         x_col = date_cols[0]
-        chart_df = df[[x_col, value_col]].set_index(x_col)
-        st.line_chart(chart_df)
+        chart = (
+            alt.Chart(df[[x_col, value_col]])
+            .mark_line(color=CHART_TEAL, point=alt.OverlayMarkDef(color=CHART_TEAL))
+            .encode(
+                x=alt.X(f"{x_col}:T", axis=alt.Axis(**axis_style)),
+                y=alt.Y(f"{value_col}:Q", axis=alt.Axis(**axis_style)),
+            )
+        )
     elif categorical_cols and df.shape[0] <= 30:
         x_col = categorical_cols[0]
-        chart_df = df[[x_col, value_col]].set_index(x_col)
-        st.bar_chart(chart_df)
-    # otherwise: skip charting silently, table is enough
+        chart = (
+            alt.Chart(df[[x_col, value_col]])
+            .mark_bar(color=CHART_TEAL, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+            .encode(
+                x=alt.X(f"{x_col}:N", axis=alt.Axis(**axis_style), sort="-y"),
+                y=alt.Y(f"{value_col}:Q", axis=alt.Axis(**axis_style)),
+            )
+        )
+    else:
+        return  # otherwise: skip charting silently, table is enough
+
+    chart = chart.properties(background=CHART_BG).configure_view(strokeWidth=0)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_table(df: pd.DataFrame, max_rows: int = 500):
+    """Renders results as a dark-themed HTML table matching the rest of the UI
+    (Streamlit's built-in dataframe widget ignores the app theme)."""
+    total_rows = len(df)
+    show_df = df.head(max_rows)
+    table_html = show_df.to_html(index=False, border=0, classes="data-table", escape=True, na_rep="—")
+    st.markdown(f'<div class="table-wrap">{table_html}</div>', unsafe_allow_html=True)
+    if total_rows > max_rows:
+        st.caption(f"Showing first {max_rows:,} of {total_rows:,} rows.")
 
 
 def handle_question(question: str):
@@ -492,7 +569,7 @@ for entry in st.session_state["history"]:
             if df is None or df.empty:
                 st.info("The query ran successfully but returned no rows.")
             else:
-                st.dataframe(df, use_container_width=True)
+                render_table(df)
                 render_chart(df)
 
         if entry["sql"]:
