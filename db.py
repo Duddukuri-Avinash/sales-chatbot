@@ -1,42 +1,127 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 
 load_dotenv()  # reads DATABASE_URL from a local .env file, if present
 
+# Schemas/tables that are internal to the database engine, not user data —
+# skip these when auto-detecting the schema so the AI isn't shown noise.
+_IGNORED_SCHEMAS = {
+    "information_schema", "pg_catalog", "sys", "mysql",
+    "performance_schema", "INFORMATION_SCHEMA", "guest",
+}
 
-def _get_database_url() -> str:
-    """
-    Works both locally (.env file) and on Streamlit Community Cloud
-    (secrets set in the app dashboard, available via st.secrets).
-    """
+DIALECT_NOTES = {
+    "postgresql": "This is PostgreSQL. Use LIMIT N for row limits.",
+    "mysql": "This is MySQL. Use LIMIT N for row limits.",
+    "mssql": (
+        "This is Microsoft SQL Server. Use TOP N instead of LIMIT "
+        "(e.g. SELECT TOP 5 * FROM table), placed right after SELECT."
+    ),
+    "sqlite": "This is SQLite. Use LIMIT N for row limits.",
+    "oracle": "This is Oracle. Use FETCH FIRST N ROWS ONLY instead of LIMIT.",
+}
+
+
+def _get_default_database_url() -> str:
+    """The app's built-in database (used when no custom database is connected)."""
     url = os.getenv("DATABASE_URL")
     if url:
         return url
-
-    # Fall back to Streamlit secrets when running on Streamlit Cloud
     try:
         import streamlit as st
         return st.secrets["DATABASE_URL"]
     except Exception:
         pass
-
     raise RuntimeError(
         "DATABASE_URL is not set. Locally: add it to a .env file. "
         "On Streamlit Cloud: add it under App settings -> Secrets."
     )
 
 
-DATABASE_URL = _get_database_url()
-
-# SQLAlchemy + psycopg2 driver for Postgres
-engine = create_engine(DATABASE_URL)
+def get_default_engine() -> Engine:
+    return create_engine(_get_default_database_url())
 
 
-def run_query(sql_query: str) -> pd.DataFrame:
+def create_engine_from_url(connection_url: str) -> Engine:
     """
-    Runs a SQL query safely and returns the results as a pandas DataFrame.
+    Builds an engine from a user-supplied connection string.
+    Expected formats (SQLAlchemy-style URIs):
+      postgresql://user:password@host:port/dbname
+      mysql+pymysql://user:password@host:port/dbname
+      mssql+pyodbc://user:password@host:port/dbname?driver=ODBC+Driver+17+for+SQL+Server
+      sqlite:///path/to/file.db
+    """
+    connection_url = connection_url.strip()
+    engine = create_engine(connection_url, pool_pre_ping=True)
+    # Fail fast with a clear error if the connection is actually bad,
+    # rather than surfacing a confusing error later on first query.
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return engine
+
+
+def get_dialect_name(engine: Engine) -> str:
+    return engine.dialect.name  # e.g. "postgresql", "mysql", "mssql", "sqlite"
+
+
+def get_dialect_note(engine: Engine) -> str:
+    return DIALECT_NOTES.get(
+        get_dialect_name(engine),
+        "Use standard SQL row-limiting syntax appropriate for this database.",
+    )
+
+
+def introspect_schema(engine: Engine, max_tables: int = 40, max_columns: int = 40) -> str:
+    """
+    Reads the real table/column structure from a connected database and
+    returns a plain-text description suitable for feeding to the AI.
+    """
+    insp = inspect(engine)
+    lines = []
+    table_count = 0
+
+    try:
+        schema_names = insp.get_schema_names()
+    except Exception:
+        schema_names = [None]  # some dialects (e.g. sqlite) don't have schemas
+
+    for schema in schema_names:
+        if schema in _IGNORED_SCHEMAS:
+            continue
+        try:
+            tables = insp.get_table_names(schema=schema)
+        except Exception:
+            continue
+
+        for table in tables:
+            if table_count >= max_tables:
+                lines.append(f"...and more tables not shown (limit {max_tables} reached).")
+                return "\n\n".join(lines)
+
+            try:
+                columns = insp.get_columns(table, schema=schema)
+            except Exception:
+                continue
+
+            qualified_name = f"{schema}.{table}" if schema else table
+            col_lines = [
+                f"    {c['name']} ({c['type']})" for c in columns[:max_columns]
+            ]
+            lines.append(qualified_name + "\n" + "\n".join(col_lines))
+            table_count += 1
+
+    if not lines:
+        return "(No user tables were found in this database.)"
+
+    return "\n\n".join(lines)
+
+
+def run_query(sql_query: str, engine: Engine) -> pd.DataFrame:
+    """
+    Runs a SQL query safely against the given engine and returns a DataFrame.
     Only SELECT statements are allowed — this blocks anything that could
     modify or delete data.
     """
@@ -64,5 +149,6 @@ def run_query(sql_query: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    test_df = run_query("SELECT * FROM gold.fact_sales LIMIT 5")
+    eng = get_default_engine()
+    test_df = run_query("SELECT * FROM gold.fact_sales LIMIT 5", eng)
     print(test_df)
