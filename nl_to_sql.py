@@ -22,12 +22,9 @@ def _get_gemini_api_key() -> str:
 
 client = genai.Client(api_key=_get_gemini_api_key())
 
-# ---- SCHEMA DESCRIPTION ----
-# This tells the AI exactly what tables/columns exist, so it writes correct SQL.
-# Column names/types below match what's actually in Supabase (gold schema).
-SCHEMA_DESCRIPTION = """
-You are a PostgreSQL expert. You have access to these tables:
-
+# Fallback schema for the app's built-in database (used when no custom
+# database is connected). Matches what's actually in Supabase (gold schema).
+DEFAULT_SCHEMA_DESCRIPTION = """
 gold.dim_customers
     customer_key (int, primary key)
     customer_id (int)
@@ -63,22 +60,38 @@ gold.fact_sales
     sales_amount (numeric)
     quantity (int)
     price (numeric)
+""".strip()
+
+DEFAULT_DIALECT_NOTE = "This is PostgreSQL. Use LIMIT N for row limits."
+
+
+def build_prompt(schema_description: str, dialect_note: str, question: str) -> str:
+    return f"""You are a SQL expert. You have access to a database with this schema:
+
+{schema_description}
+
+{dialect_note}
 
 Rules:
 - Only generate SELECT statements. Never INSERT, UPDATE, DELETE, DROP, or ALTER.
 - Always use table aliases and fully qualify column names.
-- Join fact_sales to dim_customers and dim_products when the question needs
-  customer or product details.
-- This is PostgreSQL, not SQL Server: use LIMIT instead of TOP, and do not
-  use SQL Server-only syntax (no square-bracket identifiers, no GETDATE(),
-  no TOP N — use LIMIT N instead, typically at the end of the query).
+- Join tables when the question needs data spread across more than one.
+- Only reference tables and columns that actually appear in the schema above —
+  never invent table or column names.
 - Return ONLY the raw SQL query. No explanation, no markdown, no backticks.
-"""
+
+Question: {question}
+
+SQL query:"""
 
 
-def generate_sql(question: str) -> str:
-    """Takes an English question and returns a SQL query string."""
-    prompt = f"{SCHEMA_DESCRIPTION}\n\nQuestion: {question}\n\nSQL query:"
+def generate_sql(
+    question: str,
+    schema_description: str = DEFAULT_SCHEMA_DESCRIPTION,
+    dialect_note: str = DEFAULT_DIALECT_NOTE,
+) -> str:
+    """Takes an English question plus a schema description and returns a SQL query string."""
+    prompt = build_prompt(schema_description, dialect_note, question)
     response = client.models.generate_content(
         model="gemini-flash-latest",
         contents=prompt,
